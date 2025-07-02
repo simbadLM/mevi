@@ -8,11 +8,6 @@
 
 #include "../common.h"
 
-enum PID_STATE : uint8_t {
-    DEAD  = 0,
-    ALIVE = 1
-};
-
 static volatile bool running = true;
 
 void handle_sigint(int) {
