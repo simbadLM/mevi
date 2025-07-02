@@ -10,6 +10,8 @@
 
 static volatile bool running = true;
 
+//TO-DO : determine heap first @ to calculate its size (brk - @heap start)
+
 void handle_sigint(int) {
     running = false;
 }
