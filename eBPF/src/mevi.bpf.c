@@ -69,13 +69,13 @@ int handle_exit_mmap(struct trace_event_raw_sys_exit *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->mem_state        = MEMORY_STATE_NOT_RESIDENT;
-    e->proc_info.pid    = pid;
-    e->proc_info.state  = ALIVE;
-    e->addr             = ctx->ret;
-    e->length           = *length;
-    e->timestamp        = bpf_ktime_get_ns();
-    __builtin_memcpy(e->hooked_event_name, "mmap", 25);
+    e->mem_state            = MEMORY_STATE_NOT_RESIDENT;
+    e->proc_info.pid        = pid;
+    e->proc_info.state      = ALIVE;
+    e->addr                 = ctx->ret;
+    e->length               = *length;
+    e->timestamp            = bpf_ktime_get_ns();
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_MMAP;
 
     bpf_printk("mmap => pid=%d, addr=0x%llx\n", pid, ctx->ret);
     bpf_ringbuf_submit(e, 0);
@@ -111,15 +111,15 @@ int handle_exit_mremap(struct trace_event_raw_sys_exit *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->mem_state        = MEMORY_STATE_NOT_RESIDENT;
-    e->proc_info.pid    = pid;
-    e->proc_info.state  = ALIVE;
-    e->addr             = tmp->old_addr;
-    e->new_addr         = ctx->ret;
-    e->length           = tmp->old_length;
-    e->new_length       = tmp->new_length;
-    e->timestamp        = bpf_ktime_get_ns();
-    __builtin_memcpy(e->hooked_event_name, "mremap", 25);
+    e->mem_state            = MEMORY_STATE_NOT_RESIDENT;
+    e->proc_info.pid        = pid;
+    e->proc_info.state      = ALIVE;
+    e->addr                 = tmp->old_addr;
+    e->new_addr             = ctx->ret;
+    e->length               = tmp->old_length;
+    e->new_length           = tmp->new_length;
+    e->timestamp            = bpf_ktime_get_ns();
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_MREMAP;
 
     bpf_printk("mremap => pid=%d, old_addr=0x%llx -> new_addr=0x%llx, new_len=%llu\n",
             pid, tmp->old_addr, ctx->ret, tmp->new_length);
@@ -141,12 +141,12 @@ int handle_madvise(struct trace_event_raw_sys_enter *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->mem_state        = MEMORY_STATE_NOT_RESIDENT;
-    e->proc_info.pid   = pid;
-    e->proc_info.state = ALIVE;
-    e->addr         = ctx->args[0];
-    e->timestamp    = bpf_ktime_get_ns();
-    __builtin_memcpy(e->hooked_event_name, "mmadvise", 25);
+    e->mem_state            = MEMORY_STATE_NOT_RESIDENT;
+    e->proc_info.pid        = pid;
+    e->proc_info.state      = ALIVE;
+    e->addr                 = ctx->args[0];
+    e->timestamp            = bpf_ktime_get_ns();
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_MADVISE;
 
     bpf_printk("madvise => pid=%d, addr=0x%llx\n", pid, ctx->args[0]);
     bpf_ringbuf_submit(e, 0);
@@ -174,11 +174,13 @@ int handle_page_fault_user_exception(struct trace_event_raw_exception_page_fault
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->proc_info.pid   = pid;
-    e->proc_info.state = ALIVE;
-    e->addr         = addr;
-    e->timestamp    = bpf_ktime_get_ns();
-    __builtin_memcpy(e->hooked_event_name, "page_fault_user", 25);
+    e->mem_state            = MEMORY_STATE_RESIDENT;
+    e->proc_info.pid        = pid;
+    e->proc_info.state      = ALIVE;
+    e->addr                 = addr;
+    e->timestamp            = bpf_ktime_get_ns();
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_MMAP;
+
 
     bpf_printk("page_fault_user => pid=%d, addr=0x%llx\n", pid, addr);
     bpf_ringbuf_submit(e, 0);
@@ -198,11 +200,12 @@ int handle_munmap(struct trace_event_raw_sys_enter *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->proc_info.pid   = pid;
-    e->proc_info.state = ALIVE;
-    e->addr         = ctx->args[0];
-    e->timestamp    = bpf_ktime_get_ns();
-    __builtin_memcpy(e->hooked_event_name, "munmap", 25);
+    e->mem_state            = MEMORY_STATE_UNTRACKED;
+    e->proc_info.pid        = pid;
+    e->proc_info.state      = ALIVE;
+    e->addr                 = ctx->args[0];
+    e->timestamp            = bpf_ktime_get_ns();
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_MUNMAP;
 
     bpf_printk("munmap => pid=%d, addr=0x%llx\n", pid, ctx->args[0]);
     bpf_ringbuf_submit(e, 0);
@@ -233,7 +236,8 @@ int handle_proc_fork(struct trace_event_raw_sched_process_fork *ctx) {
     e->proc_info.state      = ALIVE;
     e->proc_info.parent_pid = parent_pid;
     e->timestamp            = bpf_ktime_get_ns();
-    __builtin_memcpy(e->hooked_event_name, "fork", 25);
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_NEW_CHILD_PROC;
+
 
     bpf_ringbuf_submit(e, 0);
     bpf_printk("Tracking a new process child PID %d from parent PID %d\n", child_pid, parent_pid);
@@ -258,10 +262,11 @@ int handle_proc_exit(struct trace_event_raw_sched_process_exit *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->proc_info.pid   = pid;
-    e->proc_info.state = DEAD;
-    e->timestamp    = bpf_ktime_get_ns();
-    __builtin_memcpy(e->hooked_event_name, "exit", 25);
+    e->mem_state            = MEMORY_STATE_NOT_RESIDENT;
+    e->proc_info.pid        = pid;
+    e->proc_info.state      = DEAD;
+    e->timestamp            = bpf_ktime_get_ns();
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_EXIT;
 
     bpf_ringbuf_submit(e, 0);
 
@@ -276,14 +281,14 @@ int handle_brk(__u32 i_pid, __u8 *i_tracked_pids, __u64 i_brk_addr, __u64 *i_old
      struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
         if (!e) return 0;
 
-        e->mem_state        = MEMORY_STATE_NOT_RESIDENT;
-        e->proc_info.pid    = i_pid;
-        e->proc_info.state  = ALIVE;
-        e->addr             = i_brk_addr;
-        e->length           = i_delta;
-        e->timestamp        = bpf_ktime_get_ns();
+        e->mem_state            = MEMORY_STATE_NOT_RESIDENT;
+        e->proc_info.pid        = i_pid;
+        e->proc_info.state      = ALIVE;
+        e->addr                 = i_brk_addr;
+        e->length               = i_delta;
+        e->timestamp            = bpf_ktime_get_ns();
+        e->memory_change_kind   = MEMORY_CHANGE_KIND_BRK;
 
-        __builtin_memcpy(e->hooked_event_name, "brk", 25);
 
         bpf_printk("brk => pid=%d, addr=0x%llx, delta=%d\n", i_pid, i_brk_addr, i_delta);
         bpf_ringbuf_submit(e, 0);
@@ -303,7 +308,7 @@ int handle_exit_brk(struct trace_event_raw_sys_exit *ctx) {
 
     if (!old_addr) {
         __u64 const NO_DELTA = 0;
-        handle_brk(pid, tracked, brk_addr, old_addr, NO_DELTA);
+        handle_brk(pid, tracked, brk_addr, NULL, NO_DELTA);
         return 0;
     } else handle_brk(pid, tracked, brk_addr, old_addr, (*old_addr - brk_addr));
     return 0;
