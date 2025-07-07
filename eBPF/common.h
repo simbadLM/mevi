@@ -21,9 +21,9 @@ enum memory_change_kind {
 };
 
 struct proc_info {
-    __u32 pid;
+    __u64 pid_tgid;
     __u8  state;
-    __u32 parent_pid;
+    __u64 parent_pid_tgid;
 };
 
 struct event {
