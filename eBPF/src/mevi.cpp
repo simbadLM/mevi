@@ -35,11 +35,28 @@ int main(int argc, char** argv) {
     }
 
     int map_fd = bpf_map__fd(skel->maps.tracked_pids);
-    __u32 key = static_cast<__u32>(pid);
+    __u64 key = static_cast<__u64>(pid);
     __u8 value = ALIVE;
 
     if (bpf_map_update_elem(map_fd, &key, &value, BPF_ANY) != 0) {
         std::cerr << "Error while adding PID to the map" << std::endl;
+        mevi_bpf__destroy(skel);
+        return 1;
+    }
+
+    int tmp_map_fd = bpf_map__fd(skel->maps.tmp_data_map);
+    struct tmp_data initial = {
+        .mmap_length    = 0,
+        .old_brk        = 0,
+        .mremap_tmp     = {
+            .old_addr       = 0,
+            .old_length     = 0,
+            .new_length     = 0
+        },
+    };
+
+    if (bpf_map_update_elem(tmp_map_fd, &key, &initial, BPF_ANY) != 0) {
+        std::cerr << "Error while initializing tmp_data_map" << std::endl;
         mevi_bpf__destroy(skel);
         return 1;
     }

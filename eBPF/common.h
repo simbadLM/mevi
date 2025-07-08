@@ -37,3 +37,15 @@ struct event {
     enum memory_change_kind memory_change_kind;
 };
 
+struct mremap_tmp {
+    __u64 old_addr;
+    __u64 old_length;
+    __u64 new_length;
+};
+
+struct tmp_data {
+    __u64 mmap_length;
+    __u64 old_brk;
+    struct mremap_tmp mremap_tmp;
+};
+
