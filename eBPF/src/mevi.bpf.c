@@ -290,7 +290,7 @@ int handle_exit_brk(struct trace_event_raw_sys_exit *ctx) {
     __u64 brk_addr  = ctx->ret;
     __u64 *old_addr = &old_tmp->old_brk;
 
-    if (old_addr > 0) delta = (*old_addr - brk_addr);
+    if (*old_addr != 0) delta = (*old_addr - brk_addr);
     
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
