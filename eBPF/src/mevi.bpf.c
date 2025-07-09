@@ -5,6 +5,14 @@
 
 #include "../common.h"
 
+#ifndef CLONE_VM
+#define CLONE_VM        0x00000100
+#endif
+
+#ifndef CLONE_THREAD
+#define CLONE_THREAD    0x00010000
+#endif
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, __u32); 
@@ -210,16 +218,15 @@ int handle_munmap(struct trace_event_raw_sys_enter *ctx) {
 
 // ------------ PROCESSES EVOLUTION --------------------------------/
 
-SEC("tracepoint/sched/sched_process_fork")
+/* SEC("tracepoint/sched/sched_process_fork")
 int handle_proc_fork(struct trace_event_raw_sched_process_fork *ctx) {
     __u64 parent_pid_tgid = bpf_get_current_pid_tgid() ;
     __u8* value = bpf_map_lookup_elem(&tracked_pids, &parent_pid_tgid);
+    __u64 child_pid_tgid = ((__u64)ctx->child_pid << 32) | ctx->child_pid;
 
     if(!value || *value == DEAD) return 0;
 
-    __u32 child_pid_tgid = ctx->child_pid | ctx->child_pid; 
-
-
+    __u8 order = *value+1;
 
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
@@ -230,11 +237,111 @@ int handle_proc_fork(struct trace_event_raw_sched_process_fork *ctx) {
     e->timestamp                 = bpf_ktime_get_ns();
     e->memory_change_kind        = MEMORY_CHANGE_KIND_NEW_CHILD_PROC;
 
-
     bpf_ringbuf_submit(e, 0);
-    bpf_printk("Tracking a new process child pid_tgid %d from parent pid_tgid %d\n", child_pid_tgid, parent_pid_tgid);
+    bpf_printk("Clone_exit => tracking new thread child_pid_tgid=%d (order=%d), from parent=%d\n", child_pid_tgid, order, parent_pid_tgid);
     
-    bpf_map_update_elem(&tracked_pids, &child_pid_tgid, &value+1, BPF_ANY); // Store the process order
+    bpf_map_update_elem(&tracked_pids, &child_pid_tgid, &order, BPF_ANY); // Store the process order
+
+    return 0;
+} */
+
+SEC("tracepoint/syscalls/sys_enter_clone")
+int handle_enter_clone(struct trace_event_raw_sys_enter *ctx) {
+    __u64 parent_pid_tgid = bpf_get_current_pid_tgid();
+    __u8* tracked = bpf_map_lookup_elem(&tracked_pids, &parent_pid_tgid);
+    if (!tracked || *tracked == DEAD) return 0;
+
+    __u64 flags = ctx->args[0];
+    
+    if (!(flags & CLONE_VM) || !(flags & CLONE_THREAD)) return 0; // If child doesn't share memory let's get out of here
+
+    struct tmp_data *tmp = bpf_map_lookup_elem(&tmp_data_map, &parent_pid_tgid);
+    if(!tmp) return 0; 
+
+    struct tmp_data new_tmp = *tmp;
+
+    new_tmp.clone_flags = flags;
+    bpf_map_update_elem(&tmp_data_map, &parent_pid_tgid, &new_tmp, BPF_ANY);
+
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_clone3")
+int handle_enter_clone3(struct trace_event_raw_sys_enter *ctx) {
+    __u64 parent_pid_tgid = bpf_get_current_pid_tgid();
+    __u8* tracked = bpf_map_lookup_elem(&tracked_pids, &parent_pid_tgid);
+    if (!tracked || *tracked == DEAD) return 0;
+
+    __u64 flags;
+    struct clone_args {
+        __u64 userland_flags;
+        // No need for other fields, struct is mandatory to access data
+    };
+    struct clone_args args = {};
+    bpf_probe_read_user(&args, sizeof(args), (void *)ctx->args[0]);
+    flags = args.userland_flags;
+    
+    if (!(flags & CLONE_VM) || !(flags & CLONE_THREAD)) return 0; // If child doesn't share memory let's get out of here
+
+    struct tmp_data *tmp = bpf_map_lookup_elem(&tmp_data_map, &parent_pid_tgid);
+    if(!tmp) return 0; 
+
+    struct tmp_data new_tmp = *tmp;
+
+    new_tmp.clone_flags = flags;
+    bpf_map_update_elem(&tmp_data_map, &parent_pid_tgid, &new_tmp, BPF_ANY);
+
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_clone")
+int handle_exit_clone(struct trace_event_raw_sys_exit *ctx) {
+    __u64 parent_pid_tgid = bpf_get_current_pid_tgid();
+    __u8* value = bpf_map_lookup_elem(&tracked_pids, &parent_pid_tgid);
+    if (!value || *value == DEAD) return 0;
+
+    struct tmp_data *tmp = bpf_map_lookup_elem(&tmp_data_map, &parent_pid_tgid);
+    if (!tmp) return 0;
+
+    if (!(tmp->clone_flags & CLONE_VM) || !(tmp->clone_flags & CLONE_THREAD)) return 0;
+
+    __u32 child_pid = ctx->ret;
+    __u64 child_pid_tgid = ((__u64)child_pid << 32) | child_pid;
+    __u8 order = *value+1;
+
+    bpf_map_update_elem(&tracked_pids, &child_pid_tgid, &order, BPF_ANY);
+
+    const char *flag_str = "UNKNOWN";
+    if (tmp->clone_flags & CLONE_THREAD) flag_str = "thread(CLONE_THREAD)";
+    else if (tmp->clone_flags & CLONE_VM) flag_str = "process(CLONE_VM)";
+
+    bpf_printk("Clone_exit => tracking new %s : child_pid_tgid=%d (order=%d), from parent=%d\n",flag_str, child_pid_tgid, order, parent_pid_tgid);
+
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_clone3")
+int handle_exit_clone(struct trace_event_raw_sys_exit *ctx) {
+    __u64 parent_pid_tgid = bpf_get_current_pid_tgid();
+    __u8* value = bpf_map_lookup_elem(&tracked_pids, &parent_pid_tgid);
+    if (!value || *value == DEAD) return 0;
+
+    struct tmp_data *tmp = bpf_map_lookup_elem(&tmp_data_map, &parent_pid_tgid);
+    if (!tmp) return 0;
+
+    if (!(tmp->clone_flags & CLONE_VM) || !(tmp->clone_flags & CLONE_THREAD)) return 0;
+
+    __u32 child_pid = ctx->ret;
+    __u64 child_pid_tgid = ((__u64)child_pid << 32) | child_pid;
+    __u8 order = *value+1;
+
+    bpf_map_update_elem(&tracked_pids, &child_pid_tgid, &order, BPF_ANY);
+
+    const char *flag_str = "UNKNOWN";
+    if (tmp->clone_flags & CLONE_THREAD) flag_str = "thread(CLONE_THREAD)";
+    else if (tmp->clone_flags & CLONE_VM) flag_str = "process(CLONE_VM)";
+
+    bpf_printk("Clone3_exit => tracking new %s : child_pid_tgid=%d (order=%d), from parent=%d\n",flag_str, child_pid_tgid, order, parent_pid_tgid);
 
     return 0;
 }
