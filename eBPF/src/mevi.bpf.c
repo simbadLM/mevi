@@ -321,7 +321,7 @@ int handle_exit_clone(struct trace_event_raw_sys_exit *ctx) {
 }
 
 SEC("tracepoint/syscalls/sys_exit_clone3")
-int handle_exit_clone(struct trace_event_raw_sys_exit *ctx) {
+int handle_exit_clone3(struct trace_event_raw_sys_exit *ctx) {
     __u64 parent_pid_tgid = bpf_get_current_pid_tgid();
     __u8* value = bpf_map_lookup_elem(&tracked_pids, &parent_pid_tgid);
     if (!value || *value == DEAD) return 0;
@@ -333,14 +333,17 @@ int handle_exit_clone(struct trace_event_raw_sys_exit *ctx) {
 
     __u32 child_pid = ctx->ret;
     __u64 child_pid_tgid = ((__u64)child_pid << 32) | child_pid;
-    __u8 order = *value+1;
+    __u8 order = *value;
 
     bpf_map_update_elem(&tracked_pids, &child_pid_tgid, &order, BPF_ANY);
 
     const char *flag_str = "UNKNOWN";
-    if (tmp->clone_flags & CLONE_THREAD) flag_str = "thread(CLONE_THREAD)";
-    else if (tmp->clone_flags & CLONE_VM) flag_str = "process(CLONE_VM)";
-
+    if (child_pid_tgid != parent_pid_tgid) {
+        order = *value+1;
+        flag_str = "process";
+    } else {
+        flag_str = "thread";
+    }
     bpf_printk("Clone3_exit => tracking new %s : child_pid_tgid=%d (order=%d), from parent=%d\n",flag_str, child_pid_tgid, order, parent_pid_tgid);
 
     return 0;
@@ -358,7 +361,57 @@ int handle_proc_exit(struct trace_event_raw_sched_process_exit *ctx) {
 
     if(!tracked || *tracked == DEAD) return 0;
 
-    __u8 dead = DEAD; // No other choice than to create temporary variable 
+    __u8 dead = DEAD;
+    bpf_map_update_elem(&tracked_pids, &pid_tgid, &dead, BPF_ANY);
+
+    struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (!e) return 0;
+
+    e->memory_state         = MEMORY_STATE_NOT_RESIDENT;
+    e->proc_info.pid_tgid   = pid_tgid;
+    e->proc_info.state      = DEAD;
+    e->timestamp            = bpf_ktime_get_ns();
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_EXIT;
+
+    bpf_ringbuf_submit(e, 0);
+
+    bpf_printk("exit=> exiting the pid_tgid %d\n", pid_tgid);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_execve")
+int handle_execve(struct trace_event_raw_sys_enter *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u8* tracked = bpf_map_lookup_elem(&tracked_pids, &pid_tgid);
+
+    if(!tracked || *tracked == DEAD) return 0;
+
+    __u8 dead = DEAD;
+    bpf_map_update_elem(&tracked_pids, &pid_tgid, &dead, BPF_ANY);
+
+    struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (!e) return 0;
+
+    e->memory_state         = MEMORY_STATE_NOT_RESIDENT;
+    e->proc_info.pid_tgid   = pid_tgid;
+    e->proc_info.state      = DEAD;
+    e->timestamp            = bpf_ktime_get_ns();
+    e->memory_change_kind   = MEMORY_CHANGE_KIND_EXIT;
+
+    bpf_ringbuf_submit(e, 0);
+
+    bpf_printk("exit=> exiting the pid_tgid %d\n", pid_tgid);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_execveat")
+int handle_at(struct trace_event_raw_sys_enter *ctx) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u8* tracked = bpf_map_lookup_elem(&tracked_pids, &pid_tgid);
+
+    if(!tracked || *tracked == DEAD) return 0;
+
+    __u8 dead = DEAD;
     bpf_map_update_elem(&tracked_pids, &pid_tgid, &dead, BPF_ANY);
 
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
