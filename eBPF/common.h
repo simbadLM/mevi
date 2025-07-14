@@ -13,7 +13,7 @@ enum memory_state {
     MEMORY_STATE_RESIDENT = 1,
     MEMORY_STATE_NOT_RESIDENT = 2,
     MEMORY_STATE_UNTRACKED = 3,
-    MEMORY_STATE_UNKNOWKN = 4
+    MEMORY_STATE_UNKNOWN = 4
 };
 
 struct proc_info {

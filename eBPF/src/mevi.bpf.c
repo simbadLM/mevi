@@ -13,6 +13,10 @@
 #define CLONE_THREAD 0x00010000
 #endif
 
+#ifndef MADV_DONTNEED
+#define MADV_DONTNEED 4
+#endif
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, __u32); 
@@ -48,6 +52,7 @@ int handle_enter_mmap(struct trace_event_raw_sys_enter *ctx) {
     new_tmp.mmap_length = ctx->args[1];
 
     bpf_map_update_elem(&tmp_data_map, &pid_tgid, &new_tmp, BPF_ANY);
+    bpf_printk("mmap (enter) => pid_tgid=%d, addr=0x%llx\n", pid_tgid, ctx->args[0]);
     return 0;
 }
 
@@ -104,6 +109,7 @@ int handle_enter_mremap(struct trace_event_raw_sys_enter *ctx) {
     new_tmp.mremap_tmp = m;
 
     bpf_map_update_elem(&tmp_data_map, &pid_tgid, &new_tmp, BPF_ANY);
+    bpf_printk("mremap (raw) => pid_tgid=%d, old_addr=0x%llx,old_length=0x%llx\n", pid_tgid, ctx->args[0],ctx->args[1]);
     return 0;
 }
 
@@ -182,12 +188,12 @@ int handle_munmap(struct trace_event_raw_sys_enter *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->change.memory_state  = MEMORY_STATE_UNTRACKED;
+    e->change.state  = MEMORY_STATE_UNTRACKED;
     e->proc_info.pid_tgid   = pid_tgid;
     e->proc_info.state      = ALIVE;
-    e->change.unmap.addr          = ctx->args[0];
+    e->change.unmap.range.addr = ctx->args[0];
     e->timestamp            = bpf_ktime_get_ns();
-    e->memory_change_kind   = MEMORY_CHANGE_KIND_MUNMAP;
+    e->change.kind   = MEMORY_CHANGE_KIND_UNMAP;
 
     bpf_printk("munmap => pid_tgid=%d, addr=0x%llx\n", pid_tgid, ctx->args[0]);
     bpf_ringbuf_submit(e, 0);
@@ -204,12 +210,12 @@ int handle_madvise(struct trace_event_raw_sys_enter *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->change.memory_state  = MEMORY_STATE_UNTRACKED;
+    e->change.state  = MEMORY_STATE_UNTRACKED;
     e->proc_info.pid_tgid   = pid_tgid;
     e->proc_info.state      = ALIVE;
-    e->change.unmap.addr    = ctx->args[0];
+    e->change.unmap.range.addr    = ctx->args[0]; // Similar to unmap
     e->timestamp            = bpf_ktime_get_ns();
-    e->memory_change_kind   = MEMORY_CHANGE_KIND_MUNMAP;
+    e->change.kind   = MEMORY_CHANGE_KIND_UNMAP;
 
     bpf_printk("madvise => pid_tgid=%d, addr=0x%llx\n", pid_tgid, ctx->args[0]);
     bpf_ringbuf_submit(e, 0);
@@ -310,7 +316,10 @@ int handle_exit_clone(struct trace_event_raw_sys_exit *ctx) {
     __u64 child_pid_tgid = ((__u64)child_pid << 32) | child_pid;
     __u8 order = *value+1;
 
+    struct tmp_data child_tmp_data = *tmp;
+
     bpf_map_update_elem(&tracked_pids, &child_pid_tgid, &order, BPF_ANY);
+    bpf_map_update_elem(&tmp_data_map, &child_pid_tgid, &child_tmp_data, BPF_ANY);
 
     const char *flag_str = "UNKNOWN";
     if (tmp->clone_flags & CLONE_THREAD) flag_str = "thread(CLONE_THREAD)";
@@ -336,7 +345,10 @@ int handle_exit_clone3(struct trace_event_raw_sys_exit *ctx) {
     __u64 child_pid_tgid = ((__u64)child_pid << 32) | child_pid;
     __u8 order = *value;
 
+    struct tmp_data child_tmp_data = *tmp;
+
     bpf_map_update_elem(&tracked_pids, &child_pid_tgid, &order, BPF_ANY);
+    bpf_map_update_elem(&tmp_data_map, &child_pid_tgid, &child_tmp_data, BPF_ANY);
 
     const char *flag_str = "UNKNOWN";
     if (child_pid_tgid != parent_pid_tgid) {
@@ -368,7 +380,7 @@ int handle_proc_exit(struct trace_event_raw_sched_process_exit *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->change.unmap.memory_state = MEMORY_STATE_UNTRACKED;
+    e->change.state = MEMORY_STATE_UNTRACKED;
     e->proc_info.pid_tgid        = pid_tgid;
     e->proc_info.state           = DEAD;
     e->timestamp                 = bpf_ktime_get_ns();
@@ -392,7 +404,7 @@ int handle_execve(struct trace_event_raw_sys_enter *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->change.unmap.memory_state = MEMORY_STATE_UNTRACKED;
+    e->change.state = MEMORY_STATE_UNTRACKED;
     e->proc_info.pid_tgid        = pid_tgid;
     e->proc_info.state           = DEAD;
     e->timestamp                 = bpf_ktime_get_ns();
@@ -416,7 +428,7 @@ int handle_at(struct trace_event_raw_sys_enter *ctx) {
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
-    e->change.unmap.memory_state = MEMORY_STATE_UNTRACKED;
+    e->change.state = MEMORY_STATE_UNTRACKED;
     e->proc_info.pid_tgid        = pid_tgid;
     e->proc_info.state           = DEAD;
     e->timestamp                 = bpf_ktime_get_ns();
@@ -449,7 +461,7 @@ int handle_exit_brk(struct trace_event_raw_sys_exit *ctx) {
     __u64 brk_addr  = ctx->ret;
     __u64 *old_addr = &old_tmp->old_brk;
     __u64 old_range, new_range;
-    struct heap_state heap_change;
+    enum heap_state heap_change;
 
     old_range = *old_addr - new_tmp.start_brk;
     new_range = brk_addr - new_tmp.start_brk;
@@ -463,20 +475,20 @@ int handle_exit_brk(struct trace_event_raw_sys_exit *ctx) {
     e->timestamp            = bpf_ktime_get_ns();
     switch (heap_change) {
         case HEAP_STATE_ALL_DATA_REMOVED : 
-            e->change.memory_state      = MEMORY_STATE_UNTRACKED;
-            e->memory_change_kind       = MEMORY_CHANGE_KIND_UNMAP;
+            e->change.state      = MEMORY_STATE_UNTRACKED;
+            e->change.kind       = MEMORY_CHANGE_KIND_UNMAP;
             break;
         
         case HEAP_STATE_INCREASE :
-            e->change.memory_state      = MEMORY_STATE_NOT_RESIDENT;
-            e->memory_change_kind       = MEMORY_CHANGE_KIND_MAP;
+            e->change.state      = MEMORY_STATE_NOT_RESIDENT;
+            e->change.kind       = MEMORY_CHANGE_KIND_MAP;
             e->change.map.range.addr    = brk_addr;
             e->change.map.range.length  = new_range;
             break;
         
         case HEAP_STATE_DECREASE : 
-            e->change.memory_state      = MEMORY_STATE_UNKNOWN; //To be or not to be resident...
-            e->memory_change_kind       = MEMORY_CHANGE_KIND_UNMAP;
+            e->change.state      = MEMORY_STATE_UNKNOWN; //To be or not to be resident...
+            e->change.kind       = MEMORY_CHANGE_KIND_UNMAP;
             e->change.unmap.range.addr  = brk_addr;
             e->change.unmap.range.length= new_range;
             break;
