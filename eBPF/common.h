@@ -68,6 +68,7 @@ struct mremap_tmp {
 
 struct tmp_data {
     __u64 mmap_length;
+    __u64 brk_arg0;
     __u64 old_brk;
     __u64 start_brk;
     __u64 clone_flags;

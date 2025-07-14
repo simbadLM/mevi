@@ -20,37 +20,6 @@ void handle_sigint(int) {
 #define MAX_STAT_LINE 4096
 #define TARGET_FIELD 45
 
-unsigned long long get_start_brk(pid_t pid) {
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
-
-    FILE *file = fopen(path, "r");
-    if (!file) return 0;
-
-    char line[MAX_STAT_LINE];
-    if (!fgets(line, sizeof(line), file)) {
-        fclose(file);
-        return 0;
-    }
-    fclose(file);
-
-    char *comm_field = strrchr(line, ')'); // find end of command field
-    if (!comm_field) return 0;
-
-    char *rest = comm_field + 2; // skip ") " to reach field 3
-    int field_index = 3;
-
-    char *token = strtok(rest, " ");
-    while (token && field_index <= TARGET_FIELD) {
-        if (field_index == TARGET_FIELD)
-            return strtoull(token, nullptr, 10);
-        token = strtok(nullptr, " ");
-        field_index++;
-    }
-
-    return 0;
-}
-
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <program> [args...]" << std::endl;
@@ -92,7 +61,7 @@ int main(int argc, char** argv) {
     struct tmp_data tmp_init = {
         .mmap_length    = 0,
         .old_brk        = 0,
-        .start_brk      = get_start_brk(pid),
+        .start_brk      = 0,
         .mremap_tmp     = {
             .old_addr       = 0,
             .old_length     = 0,
