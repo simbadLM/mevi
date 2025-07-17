@@ -10,7 +10,7 @@ clean:
 	rm -rf mevi.bpf.o
 	rm -rf mevi
 	rm -rf .cache/
-	rm -f compile_commands.json
+	rm -f compile_commands.json mevi_log.json
 
 vmlinux.h:
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@
