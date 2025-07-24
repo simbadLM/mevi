@@ -407,22 +407,40 @@ int handle_execve(struct trace_event_raw_sys_enter *ctx) {
 
     if(!tracked || *tracked == DEAD) return 0;
 
-    __u8 dead = DEAD;
-    bpf_map_update_elem(&tracked_pids, &pid_tgid, &dead, BPF_ANY);
+    struct tmp_data *tmp = bpf_map_lookup_elem(&tmp_data_map, &pid_tgid);
+    if (!tmp) return 0;
+
+    struct tmp_data new_tmp = *tmp;
+
+    if (new_tmp.start_brk == 0) {
+        struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+        struct mm_struct *mm = NULL;
+
+        bpf_core_read(&mm, sizeof(mm), &task->mm);
+        if (!mm) return 0;
+
+        unsigned long start_brk;
+        bpf_core_read(&start_brk, sizeof(start_brk), &mm->start_brk);
+        new_tmp.start_brk = start_brk;
+        new_tmp.old_brk = start_brk;
+
+        bpf_map_update_elem(&tmp_data_map, &pid_tgid, &new_tmp, BPF_ANY);
+    }
 
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
 
     e->change.state = MEMORY_STATE_UNTRACKED;
-    e->proc_info.pid_tgid        = pid_tgid;
-    e->proc_info.state           = DEAD;
-    e->timestamp                 = bpf_ktime_get_ns();
+    e->proc_info.pid_tgid = pid_tgid;
+    e->proc_info.state = DEAD;
+    e->timestamp = bpf_ktime_get_ns();
 
     bpf_ringbuf_submit(e, 0);
 
-    bpf_printk("execve=> delete mapping for the pid_tgid %d\n", pid_tgid);
+    bpf_printk("execve => start_brk initialized to 0x%lx for pid_tgid=%llu\n", new_tmp.start_brk, pid_tgid);
     return 0;
 }
+
 
 SEC("tracepoint/syscalls/sys_enter_execveat")
 int handle_at(struct trace_event_raw_sys_enter *ctx) {
@@ -459,8 +477,7 @@ int handle_enter_brk(struct trace_event_raw_sys_enter *ctx) {
         return 0;
 
     struct tmp_data *tmp = bpf_map_lookup_elem(&tmp_data_map, &pid_tgid);
-    if (!tmp)
-        return 0;
+    if (!tmp) return 0;
 
     struct tmp_data new_tmp = *tmp;
 
@@ -485,14 +502,6 @@ int handle_exit_brk(struct trace_event_raw_sys_exit *ctx) {
 
     __u64 brk_addr  = ctx->ret;
     __u64 *old_addr = &old_tmp->old_brk;
-
-    if (new_tmp.start_brk == 0 && new_tmp.brk_arg0 == 0) {
-        new_tmp.start_brk = brk_addr;
-        new_tmp.old_brk = brk_addr;
-        bpf_map_update_elem(&tmp_data_map, &pid_tgid, &new_tmp, BPF_ANY);
-        bpf_printk("init start_brk=0x%llx for pid_tgid=%llu\n", brk_addr, pid_tgid);
-        return 0;
-    }
 
     struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (!e) return 0;
